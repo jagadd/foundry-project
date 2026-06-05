@@ -1,0 +1,62 @@
+{
+  "overall_status": "RESTORE_FAILED_BUT_LEARNED",
+  "triage": {
+    "status": "success",
+    "response": "The checks for restoring salesdb passed:\n- Disk space on the target VM is sufficient (41,859 MB free on D:\\, which is 83.72% free).\n- The salesdb database does not currently exist on the target VM, so no conflict.\n\nAccording to SOP-RESTORE-001, before restore you should:\n1. Verify disk space (done).\n2. Confirm target DB state (done).\n3. Use COPY_ONLY backup less than 48 hours old.\n4. Use RESTORE FILELISTONLY and plan MOVE for file drives.\n5. Post-restore, apply steps like data masking for salesdb, fixing orphaned users, setting MULTI_USER, and validating DB state ONLINE.\n\nYou may proceed with routing this restore request to the restore agent.\nResponse:\n```json\n{\"route_to\": \"restore_agent\", \"db_name\": \"salesdb\", \"checks_passed\": true}\n```\n\nReference: SOP-RESTORE-001.md for checklist and post-restore steps; incident report and disk space rules .",
+    "tool_calls": [
+      {
+        "tool": "check_disk_space",
+        "args": {}
+      },
+      {
+        "tool": "check_target_db",
+        "args": {
+          "db_name": "salesdb"
+        }
+      }
+    ]
+  },
+  "restore": {
+    "status": "success",
+    "response": "The restore operation for database 'salesdb' failed due to the specified backup file not being found or accessible at the given path. The error indicates a missing or incorrect backup file path, or that the file might be deleted, moved, or permissions are lacking.\n\nRecommended next steps:\n1. Verify the exact location and filename of the required COPY_ONLY backup for 'salesdb'.\n2. Confirm the backup file exists and is accessible on the target storage location.\n3. If missing, locate an alternate valid backup that meets the SOP-RESTORE-001 requirements (COPY_ONLY, less than 48 hours old).\n4. Attempt the restore again with the correct backup file path.\n\nThis is consistent with documented resolutions and prevention steps for this failure mode in the SOP and incident reports.\n\nPlease provide the correct accessible backup file path or upload the required backup to the expected location for retrying the restore.",
+    "tool_calls": [
+      {
+        "tool": "restore_database",
+        "args": {
+          "db_name": "salesdb",
+          "backup_path": "D:\\backups\\salesdb_COPY_ONLY.bak"
+        }
+      }
+    ]
+  },
+  "learning": {
+    "status": "success",
+    "response": "{\n  \"learning_triggered_by\": \"Restore FAILED for salesdb due to missing or inaccessible backup file\",\n  \"sop_generated\": \"SOP-AUTO-20260606_011142\",\n  \"sop_uploaded\": true,\n  \"new_tool_suggested\": true,\n  \"tool_name\": \"verify_backup_path.py\",\n  \"summary\": \"The restore failure was caused by a missing, moved, renamed, or inaccessible backup file at the specified path. The backup may also lack required permissions or may not meet the COPY_ONLY and age criteria per SOP-RESTORE-001. An SOP was generated and uploaded that covers verifying backup file location, existence, accessibility, correcting the restore command, and retrying the restore. Preventive measures include maintaining backup repository hygiene, monitoring, and periodic validation. A new Python tool to verify backup file existence and permissions before restore attempt was created to avoid recurrence.\"\n}",
+    "tool_calls": [
+      {
+        "tool": "generate_sop",
+        "args": {
+          "failure_context": "{\"operation\": \"RESTORE\", \"db_name\": \"salesdb\", \"error\": \"The restore operation for database 'salesdb' failed due to the specified backup file not being found or accessible at the given path. The error indicates a missing or incorrect backup file path, or that the file might be deleted, moved, or permissions are lacking.\\n\\nRecommended next steps:\\n1. Verify the exact location and filename of the required COPY_ONLY backup for 'salesdb'.\\n2. Confirm the backup file exists and is accessible on the target storage location.\\n3. If missing, locate an alternate valid backup that meets the SOP-RESTORE-001 requirements (COPY_ONLY, less than 48 hours old).\\n4. Attempt the restore again with the correct backup file path.\\n\\nThis is consistent with documented resolutions and prevention steps for this failure mode in the SOP and incident reports.\\n\\nPlease provide the correct accessible backup file path or upload the required backup to the expected location for retrying the restore.\", \"tools_used\": [\"restore_database\"], \"timestamp\": \"2026-06-06T01:05:14.749980\"}"
+        }
+      },
+      {
+        "tool": "upload_sop_to_vectorstore",
+        "args": {
+          "filepath": "knowledge/SOP-AUTO-20260606_011142.md"
+        }
+      },
+      {
+        "tool": "upload_sop_to_vectorstore",
+        "args": {
+          "filepath": "knowledge/SOP-AUTO-20260606_011142.md"
+        }
+      },
+      {
+        "tool": "suggest_tool",
+        "args": {
+          "failure_context": "{\"operation\": \"RESTORE\", \"db_name\": \"salesdb\", \"error\": \"The restore operation for database 'salesdb' failed due to the specified backup file not being found or accessible at the given path. The error indicates a missing or incorrect backup file path, or that the file might be deleted, moved, or permissions are lacking.\", \"tools_used\": [\"restore_database\"], \"timestamp\": \"2026-06-06T01:05:14.749980\"}"
+        }
+      }
+    ]
+  }
+}

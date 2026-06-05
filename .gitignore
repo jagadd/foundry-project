@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+knowledge/*.json
+*.log
+.vscode/
+.agent_ids.json
+.vector_store_id
+logs/
+tools/__pycache__/
