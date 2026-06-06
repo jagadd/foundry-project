@@ -253,6 +253,7 @@ def run_agent(agent_name, user_message, context=""):
         full_input = f"CONTEXT FROM PREVIOUS AGENT:\n{context}\n\nREQUEST:\n{user_message}"
 
     tool_calls_log = []
+    tool_results_log = []
 
     try:
         openai = project.get_openai_client(agent_name=agent_name)
@@ -276,6 +277,7 @@ def run_agent(agent_name, user_message, context=""):
                 func_args = json.loads(tc.arguments) if tc.arguments else {}
                 tool_calls_log.append({"tool": func_name, "args": func_args})
                 result_str = execute_tool(func_name, func_args)
+                tool_results_log.append({"tool": func_name, "result": result_str})
                 tool_results.append({
                     "type": "function_call_output",
                     "call_id": tc.call_id,
@@ -291,11 +293,11 @@ def run_agent(agent_name, user_message, context=""):
         final_text = response.output_text if response.output_text else "No text response from agent."
         print(f"\n{agent_name} says:\n{final_text[:500]}")
 
-        return {"status": "success", "response": final_text, "tool_calls": tool_calls_log}
+        return {"status": "success", "response": final_text, "tool_calls": tool_calls_log, "tool_results": tool_results_log}
 
     except Exception as e:
         print(f"\n{agent_name} error: {e}")
-        return {"status": "error", "response": str(e), "tool_calls": tool_calls_log}
+        return {"status": "error", "response": str(e), "tool_calls": tool_calls_log, "tool_results": tool_results_log}
 
 
 # ============================================================
@@ -440,9 +442,24 @@ def orchestrate(user_request):
     restore_result = run_agent(RESTORE_AGENT, restore_input, context=triage_response)
 
     restore_response = restore_result["response"]
+
+    # v1.1.1 -- BUG-2 fix: check actual tool results for REJECTED status,
+    # not just LLM narrative text (which may omit failure keywords).
+    tool_results = restore_result.get("tool_results", [])
+    any_tool_rejected = any(
+        '"REJECTED"' in tr.get("result", "")
+        for tr in tool_results
+    )
+    restore_actually_ran = any(
+        tr["tool"] == "restore_database" and '"REJECTED"' not in tr.get("result", "")
+        and '"error"' not in tr.get("result", "").lower()
+        for tr in tool_results
+    )
     restore_failed = (
         restore_result["status"] == "error"
+        or any_tool_rejected
         or any(w in restore_response.lower() for w in ["failed", "error", "rejected"])
+        or not restore_actually_ran
     )
 
     if not restore_failed:

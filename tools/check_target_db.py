@@ -1,9 +1,11 @@
+
 import os
 import pyodbc
 import json
 from dotenv import load_dotenv
 
 load_dotenv()
+
 
 def check_target_database(target_db_name):
     """Check if database exists on target VM and count active connections."""
@@ -16,16 +18,22 @@ def check_target_database(target_db_name):
         f"TrustServerCertificate=yes;"
     )
     cursor = conn.cursor()
-    
-    # Check if DB exists
+
+    # Check if DB exists (case-insensitive)
     cursor.execute("""
-        SELECT name, state_desc, create_date, 
-               compatibility_level, recovery_model_desc
-        FROM sys.databases WHERE name = ?
+        SELECT
+            name,
+            state_desc,
+            create_date,
+            compatibility_level,
+            recovery_model_desc
+        FROM sys.databases
+        WHERE name COLLATE SQL_Latin1_General_CP1_CI_AS =
+              ? COLLATE SQL_Latin1_General_CP1_CI_AS
     """, target_db_name)
-    
+
     db_row = cursor.fetchone()
-    
+
     if not db_row:
         conn.close()
         return json.dumps({
@@ -33,14 +41,18 @@ def check_target_database(target_db_name):
             "active_connections": 0,
             "message": f"Database '{target_db_name}' does not exist on VM"
         }, indent=2)
-    
-    # Count active connections
+
+    # Count active connections using the canonical DB name returned by SQL Server
+    canonical_db_name = db_row[0]
+
     cursor.execute("""
-        SELECT COUNT(*) FROM sys.dm_exec_sessions 
+        SELECT COUNT(*)
+        FROM sys.dm_exec_sessions
         WHERE database_id = DB_ID(?)
-    """, target_db_name)
+    """, canonical_db_name)
+
     active = cursor.fetchone()[0]
-    
+
     conn.close()
     return json.dumps({
         "exists": True,
@@ -52,12 +64,13 @@ def check_target_database(target_db_name):
         "active_connections": active
     }, indent=2)
 
-# Test it
+
 if __name__ == "__main__":
-    # Test with existing DB
-    print("Test 1: Check 'salesdb' (exists)...")
-    print(check_target_database("salesdb"))
-    
-    # Test with non-existing DB
-    print("\nTest 2: Check 'salesdb_dev_copy' (should not exist)...")
+    print("Test 1: Check 'EnterpriseHR'...")
+    print(check_target_database("EnterpriseHR"))
+
+    print("\nTest 2: Check 'enterprisehr'...")
+    print(check_target_database("enterprisehr"))
+
+    print("\nTest 3: Check 'salesdb_dev_copy'...")
     print(check_target_database("salesdb_dev_copy"))
