@@ -5,9 +5,9 @@ Author: jagadeesan.vg@cognizant.com - 2276259
 Wires 3 agents: Triage > Restore > Learning (on failure)
 Uses Foundry Responses API: project.get_openai_client(agent_name=...)
 
-v1.1 - Added DB name validation gate before restore execution.
-       User-provided names are resolved against real source DB names
-       from blob storage before any restore proceeds.
+v1.1 - DB name validation gate before restore execution.
+       User-provided names resolved against real source DB names from blob storage.
+       Improved no-match handling: blob empty vs no-match-but-available.
 """
 import os, json, sys, re
 from datetime import datetime
@@ -58,7 +58,6 @@ APPROVAL_REQUIRED_TOOLS = {
     "suggest_tool": "This may create a new Python tool file on the VM.",
 }
 
-# Words to ignore when extracting DB name from user request (fallback parser)
 IGNORE_WORDS = {
     "restore", "on", "the", "target", "server", "database",
     "from", "source", "to", "db", "backup", "copy", "please",
@@ -77,7 +76,7 @@ def resolve_db_name(user_input):
         (result, match_type)
         - 'exact':  result = canonical DB name (str)
         - 'fuzzy':  result = list of candidate DB names
-        - 'none':   result = list of all available DB names
+        - 'none':   result = list of all available DB names (may be empty)
     """
     data = lookup_backups()
     available = data.get("available_databases", [])
@@ -89,7 +88,7 @@ def resolve_db_name(user_input):
         if name.lower() == user_lower:
             return name, "exact"
 
-    # 2. Substring match (user input contained in source name or vice versa)
+    # 2. Substring match
     substring_matches = [
         n for n in source_names
         if user_lower in n.lower() or n.lower() in user_lower
@@ -111,7 +110,7 @@ def resolve_db_name(user_input):
         if candidates:
             return candidates, "fuzzy"
 
-    # 4. No match at all
+    # 4. No match
     return source_names, "none"
 
 
@@ -136,9 +135,9 @@ def validate_restore_args(arguments):
     if match_type == "fuzzy":
         candidates = resolved
         print(f"\n  [SAFETY NET] Agent passed '{raw_name}' -- not an exact source DB name.")
-        print(f"  Candidates from blob storage:")
-        for i, c in enumerate(candidates, 1):
-            print(f"    {i}. {c}")
+        print("  Candidates from blob storage:")
+        for idx, c in enumerate(candidates, 1):
+            print(f"    {idx}. {c}")
         while True:
             choice = input(f"  Select [1-{len(candidates)}] or 'n' to cancel: ").strip().lower()
             if choice == "n":
@@ -151,10 +150,29 @@ def validate_restore_args(arguments):
                 return arguments
             print(f"  Enter 1-{len(candidates)} or 'n'")
 
-    # no match
+    # no match -- handle empty blob vs no-match-but-available
+    if not resolved:
+        print("\n  [SAFETY NET] No backups found in blob storage.")
+        print("  Possible causes: backup pipeline not run, backups deleted, SAS token issue.")
+        manual = input("  Enter exact source DB name manually, or 'n' to cancel: ").strip()
+        if manual.lower() == "n" or not manual:
+            return None
+        arguments["db_name"] = manual
+        return arguments
+
     print(f"\n  [SAFETY NET] '{raw_name}' does not match any source database.")
-    print(f"  Available: {', '.join(resolved)}")
-    return None
+    print("  Available:")
+    for idx, c in enumerate(resolved, 1):
+        print(f"    {idx}. {c}")
+    while True:
+        choice = input(f"  Select [1-{len(resolved)}] or 'n' to cancel: ").strip().lower()
+        if choice == "n":
+            return None
+        if choice.isdigit() and 1 <= int(choice) <= len(resolved):
+            arguments["db_name"] = resolved[int(choice) - 1]
+            print(f"  Confirmed: '{resolved[int(choice) - 1]}'")
+            return arguments
+        print(f"  Enter 1-{len(resolved)} or 'n'")
 
 
 # ============================================================
@@ -162,6 +180,7 @@ def validate_restore_args(arguments):
 # ============================================================
 
 def ask_approval(message):
+    """Prompt operator for approval. Returns True if approved."""
     if not REQUIRE_APPROVAL:
         print("  Auto-approved (REQUIRE_APPROVAL=False)")
         return True
@@ -184,6 +203,7 @@ def ask_approval(message):
 
 
 def execute_tool(tool_name, arguments):
+    """Execute a tool call with optional validation and approval gates."""
     print(f"  Tool call: {tool_name}({json.dumps(arguments)})")
 
     # v1.1 -- Safety net: validate DB name before restore
@@ -222,6 +242,7 @@ def execute_tool(tool_name, arguments):
 # ============================================================
 
 def run_agent(agent_name, user_message, context=""):
+    """Run a Foundry agent with tool call loop."""
     print(f"\n{'='*60}")
     print(f"Running: {agent_name}")
     print(f"Input: {user_message[:150]}...")
@@ -282,6 +303,7 @@ def run_agent(agent_name, user_message, context=""):
 # ============================================================
 
 def orchestrate(user_request):
+    """Main orchestration flow: Triage > Validate > Restore > Learning."""
     print("\n" + "==" * 30)
     print(f"  INCOMING REQUEST: {user_request}")
     print("==" * 30)
@@ -350,7 +372,7 @@ def orchestrate(user_request):
     # === DB NAME VALIDATION GATE (v1.1) ===
     print("\n  [DB NAME VALIDATION]")
     print(f"  User-provided name: '{db_name}'")
-    print(f"  Checking against source databases in blob storage...")
+    print("  Checking against source databases in blob storage...")
 
     resolved, match_type = resolve_db_name(db_name)
 
@@ -361,9 +383,9 @@ def orchestrate(user_request):
     elif match_type == "fuzzy":
         candidates = resolved
         print(f"  '{db_name}' is not an exact source database name.")
-        print(f"  Possible matches:")
-        for i, c in enumerate(candidates, 1):
-            print(f"    {i}. {c}")
+        print("  Possible matches:")
+        for idx, c in enumerate(candidates, 1):
+            print(f"    {idx}. {c}")
         while True:
             choice = input(f"  Select the correct database [1-{len(candidates)}] or 'n' to cancel: ").strip().lower()
             if choice == "n":
@@ -380,13 +402,38 @@ def orchestrate(user_request):
             print(f"  Invalid input. Enter 1-{len(candidates)} or 'n'")
 
     elif match_type == "none":
-        print(f"  '{db_name}' does not match any source database in blob storage.")
-        print(f"  Available databases: {', '.join(resolved)}")
-        return {
-            "overall_status": "RESTORE_CANCELLED_NO_MATCH",
-            "triage": triage_result,
-            "reason": f"'{db_name}' has no matching backup. Available: {', '.join(resolved)}",
-        }
+        if not resolved:
+            # Blob storage has no backups at all
+            print("  No backups found in blob storage.")
+            print("  Possible causes: backup pipeline not run, backups deleted, SAS token issue.")
+            manual = input("  Enter exact source DB name manually, or 'n' to cancel: ").strip()
+            if manual.lower() == "n" or not manual:
+                return {
+                    "overall_status": "RESTORE_CANCELLED_NO_BACKUPS",
+                    "triage": triage_result,
+                    "reason": "No backups found in blob storage.",
+                }
+            db_name = manual
+            print(f"  Using manually entered name: '{db_name}'")
+        else:
+            # Blob has backups but none match user input
+            print(f"  '{db_name}' does not match any source database in blob storage.")
+            print("  Available databases:")
+            for idx, c in enumerate(resolved, 1):
+                print(f"    {idx}. {c}")
+            while True:
+                choice = input(f"  Select from available [1-{len(resolved)}] or 'n' to cancel: ").strip().lower()
+                if choice == "n":
+                    return {
+                        "overall_status": "RESTORE_CANCELLED_NO_MATCH",
+                        "triage": triage_result,
+                        "reason": f"Operator cancelled. Available: {', '.join(resolved)}",
+                    }
+                if choice.isdigit() and 1 <= int(choice) <= len(resolved):
+                    db_name = resolved[int(choice) - 1]
+                    print(f"  Confirmed: will restore as '{db_name}'")
+                    break
+                print(f"  Enter 1-{len(resolved)} or 'n'")
 
     # === STEP 2: RESTORE ===
     restore_input = f"Restore database '{db_name}'. Triage checks passed. Proceed with restore."
@@ -430,15 +477,16 @@ def orchestrate(user_request):
 # ============================================================
 
 if __name__ == "__main__":
-    print("""
-============================================================
-  DBA Operations Agent -- Multi-Agent Orchestrator v1.1
-
-  Agents: Triage > Restore > Learning
-  Features: DB Name Validation, Human-in-the-Loop Approval
-  Approval Mode: """ + ("ON" if REQUIRE_APPROVAL else "OFF") + """
-============================================================
-    """)
+    banner = (
+        "\n============================================================\n"
+        "  DBA Operations Agent -- Multi-Agent Orchestrator v1.1\n"
+        "\n"
+        "  Agents: Triage > Restore > Learning\n"
+        "  Features: DB Name Validation, Human-in-the-Loop Approval\n"
+        "  Approval Mode: " + ("ON" if REQUIRE_APPROVAL else "OFF") + "\n"
+        "============================================================\n"
+    )
+    print(banner)
 
     if len(sys.argv) > 1:
         request = " ".join(sys.argv[1:])

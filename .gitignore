@@ -8,3 +8,5 @@ knowledge/*.json
 .vector_store_id
 logs/
 tools/__pycache__/
+.agent_ids_v2.json
+.agent_ids_v2.json
