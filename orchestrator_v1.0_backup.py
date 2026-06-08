@@ -1,25 +1,13 @@
 """
-orchestrator.py -- Multi-agent orchestrator with Human-in-the-Loop (v1.1-ctx)
+orchestrator.py -- Multi-agent orchestrator with Human-in-the-Loop (v1.1)
 Author: jagadeesan.vg@cognizant.com - 2276259
 
 Wires 3 agents: Triage > Restore > Learning (on failure)
 Uses Foundry Responses API: project.get_openai_client(agent_name=...)
 
-v1.1   - DB name validation gate before restore execution.
-         User-provided names resolved against real source DB names from blob storage.
-         Improved no-match handling: blob empty vs no-match-but-available.
-
-v1.1-ctx - Pipeline context accumulator.
-           Full context (triage analysis, tool results, db_name, original request)
-           is now passed to the Learning Agent and Restore Agent.
-           Fixes the Knowledge/Learning Agent SOP quality issue where context was incomplete.
-
-         - Triage tool failure gate: blocks restore when pre-flight tools error,
-           triggers Learning Agent with full pipeline context even when the LLM
-           still routes to restore.
-
-         - Gate moved before routing logic so it fires regardless of whether
-           the LLM routes to restore or asks for confirmation.
+v1.1 - DB name validation gate before restore execution.
+       User-provided names resolved against real source DB names from blob storage.
+       Improved no-match handling: blob empty vs no-match-but-available.
 """
 import os, json, sys, re
 from datetime import datetime
@@ -324,75 +312,20 @@ def orchestrate(user_request):
 
     timestamp = datetime.now().isoformat()
 
-    # -- Pipeline context accumulator (v1.1-ctx) --
-    # This dict accumulates context from every stage so that downstream agents
-    # (especially Learning Agent) receive the full picture for SOP generation.
-    pipeline_context = {
-        "original_request": user_request,
-        "timestamp": timestamp,
-        "db_name": "",
-        "triage": {},
-        "restore": {},
-    }
-
     # === STEP 1: TRIAGE ===
     triage_result = run_agent(TRIAGE_AGENT, user_request)
 
     if triage_result["status"] == "error":
         print("\nTriage failed. Triggering Learning Agent...")
-        pipeline_context["triage"] = {
-            "status": triage_result["status"],
-            "response": triage_result["response"],
-            "tool_calls": triage_result.get("tool_calls", []),
-            "tool_results": triage_result.get("tool_results", []),
-        }
-        failure_context = json.dumps(pipeline_context, indent=2)
+        failure_context = json.dumps({
+            "operation": "TRIAGE", "error": triage_result["response"],
+            "original_request": user_request, "timestamp": timestamp,
+        })
         learning_result = run_agent(LEARNING_AGENT,
-            f"Triage FAILED. Analyze full pipeline context and generate SOP.\n\nFULL PIPELINE CONTEXT:\n{failure_context}")
+            f"Analyze this failure and generate SOP: {failure_context}")
         return {"overall_status": "FAILED_AT_TRIAGE", "triage": triage_result, "learning": learning_result}
 
     triage_response = triage_result["response"]
-
-    # Populate pipeline context with triage output
-    pipeline_context["triage"] = {
-        "status": triage_result["status"],
-        "response": triage_response,
-        "tool_calls": triage_result.get("tool_calls", []),
-        "tool_results": triage_result.get("tool_results", []),
-    }
-
-    # === TRIAGE TOOL FAILURE GATE (v1.1-ctx) ===
-    # Check immediately after triage completes, BEFORE routing logic.
-    # If any triage tool returned an error, block the entire pipeline and
-    # trigger Learning Agent with full context -- regardless of whether the
-    # LLM decided to route to restore or ask for confirmation.
-    triage_tool_failures = [
-        tr for tr in triage_result.get("tool_results", [])
-        if '"error"' in tr.get("result", "").lower()
-    ]
-
-    if triage_tool_failures:
-        print("\n  [TRIAGE TOOL FAILURE DETECTED]")
-        print(f"  {len(triage_tool_failures)} tool(s) returned errors during triage:")
-        for tr in triage_tool_failures:
-            print(f"    - {tr['tool']}: {tr['result'][:150]}")
-        print("  Pipeline blocked. Triggering Learning Agent...")
-
-        pipeline_context["triage_tool_failures"] = triage_tool_failures
-        failure_context = json.dumps(pipeline_context, indent=2)
-        learning_result = run_agent(
-            LEARNING_AGENT,
-            "Triage pre-flight checks had tool failures. Orchestrator blocked the pipeline. "
-            "Analyze and generate SOP.\n\n"
-            f"FULL PIPELINE CONTEXT:\n{failure_context}",
-        )
-        return {
-            "overall_status": "BLOCKED_TRIAGE_TOOL_FAILURE",
-            "triage": triage_result,
-            "learning": learning_result,
-        }
-
-    # === ROUTING DETECTION ===
     route_to_restore = False
     db_name = ""
 
@@ -504,26 +437,11 @@ def orchestrate(user_request):
                     break
                 print(f"  Enter 1-{len(resolved)} or 'n'")
 
-    # Record validated db_name in pipeline context
-    pipeline_context["db_name"] = db_name
-
     # === STEP 2: RESTORE ===
     restore_input = f"Restore database '{db_name}'. Triage checks passed. Proceed with restore."
-    restore_result = run_agent(
-        RESTORE_AGENT,
-        restore_input,
-        context=json.dumps(pipeline_context["triage"], indent=2),
-    )
+    restore_result = run_agent(RESTORE_AGENT, restore_input, context=triage_response)
 
     restore_response = restore_result["response"]
-
-    # Populate pipeline context with restore output
-    pipeline_context["restore"] = {
-        "status": restore_result["status"],
-        "response": restore_response,
-        "tool_calls": restore_result.get("tool_calls", []),
-        "tool_results": restore_result.get("tool_results", []),
-    }
 
     # v1.1.1 -- BUG-2 fix: check actual tool results for REJECTED status,
     # not just LLM narrative text (which may omit failure keywords).
@@ -552,12 +470,14 @@ def orchestrate(user_request):
 
     # === STEP 3: LEARNING (on failure) ===
     print("\nRestore failed. Triggering Learning Agent...")
-    failure_context = json.dumps(pipeline_context, indent=2)
-    learning_result = run_agent(
-        LEARNING_AGENT,
-        "Restore FAILED. Analyze full pipeline context, generate SOP, upload, suggest tool."
-        f"\n\nFULL PIPELINE CONTEXT:\n{failure_context}",
-    )
+    failure_context = json.dumps({
+        "operation": "RESTORE", "db_name": db_name,
+        "error": restore_response,
+        "tools_used": [tc["tool"] for tc in restore_result.get("tool_calls", [])],
+        "timestamp": timestamp,
+    })
+    learning_result = run_agent(LEARNING_AGENT,
+        f"Restore FAILED. Analyze, generate SOP, upload, suggest tool.\n\nFAILURE:\n{failure_context}")
 
     print("\n" + "==" * 30)
     print("  LEARNING COMPLETE")
@@ -576,11 +496,10 @@ def orchestrate(user_request):
 if __name__ == "__main__":
     banner = (
         "\n============================================================\n"
-        "  DBA Operations Agent -- Multi-Agent Orchestrator v1.1-ctx\n"
+        "  DBA Operations Agent -- Multi-Agent Orchestrator v1.1\n"
         "\n"
         "  Agents: Triage > Restore > Learning\n"
-        "  Features: DB Name Validation, Human-in-the-Loop Approval,\n"
-        "            Pipeline Context Accumulator, Triage Tool Failure Gate\n"
+        "  Features: DB Name Validation, Human-in-the-Loop Approval\n"
         "  Approval Mode: " + ("ON" if REQUIRE_APPROVAL else "OFF") + "\n"
         "============================================================\n"
     )

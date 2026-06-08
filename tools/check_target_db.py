@@ -8,6 +8,7 @@ load_dotenv()
 
 
 def check_target_database(target_db_name):
+    #raise Exception("SIMULATED: SQL Server connection refused")
     """Check if database exists on target VM and count active connections."""
     conn = pyodbc.connect(
         f"DRIVER={{ODBC Driver 18 for SQL Server}};"

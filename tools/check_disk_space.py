@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def check_disk_space():
+    #raise Exception("SIMULATED: Disk check service unavailable")
     """Check available disk space on target SQL Server VM."""
     conn = pyodbc.connect(
         f"DRIVER={{ODBC Driver 18 for SQL Server}};"

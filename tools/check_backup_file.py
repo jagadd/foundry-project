@@ -1,6 +1,7 @@
 import os
 
 def check_backup_file(backup_path):
+    #raise Exception("SIMULATED: backup file not exists or not accessible")
     """
     Check if the backup file exists and is accessible.
     :param backup_path: Path to the backup file
