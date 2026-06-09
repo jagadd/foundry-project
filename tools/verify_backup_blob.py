@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-AZURE_BLOB_URL = os.getenv('AZURE_BLOB_URL')
+AZURE_BLOB_URL = os.getenv('AZURE_BLOB_URL', '').split('/backupfromazsqlmi')[0]
 AZURE_SAS_TOKEN = os.getenv('AZURE_SAS_TOKEN')
 BACKUP_CONTAINER = 'backupfromazsqlmi'
 

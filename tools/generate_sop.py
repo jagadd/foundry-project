@@ -24,7 +24,12 @@ TEMP_AGENT_NAME = "sop-generator-temp"
 
 def generate_sop(failure_context):
     if isinstance(failure_context, str):
-        failure_context = json.loads(failure_context)
+        try:
+            failure_context = json.loads(failure_context)
+        except (json.JSONDecodeError, ValueError):
+            # Deeply nested escaped JSON (e.g., D:\ paths) can break parsing.
+            # Use raw string as-is -- the LLM prompt still works with unformatted text.
+            failure_context = {"raw_context": failure_context}
 
     prompt = f"""You are a senior DBA knowledge engineer working in an Azure cloud environment.
 A database operation FAILED. Generate a detailed SOP in Markdown.

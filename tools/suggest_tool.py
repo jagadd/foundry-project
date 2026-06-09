@@ -24,7 +24,10 @@ TEMP_AGENT_NAME = "tool-suggester-temp"
 
 def suggest_tool(failure_context):
     if isinstance(failure_context, str):
-        failure_context = json.loads(failure_context)
+        try:
+            failure_context = json.loads(failure_context)
+        except (json.JSONDecodeError, ValueError):
+            failure_context = {"raw_context": failure_context}
 
     prompt = f"""You are a senior DBA automation engineer working in an Azure cloud environment.
 A database operation failed. Analyze if a NEW reusable Python tool could prevent this.
